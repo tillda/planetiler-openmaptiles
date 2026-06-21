@@ -513,6 +513,12 @@ public class Transportation implements
 
       FeatureCollector.Feature feature = features.line(LAYER_NAME).setBufferPixels(BUFFER_SIZE)
         // main attributes at all zoom levels (used for grouping <= z8)
+        // xplatform: the OSM way id on every road feature at every zoom — the
+        // feature-state recolor + shadow-ribbon contract (see xplatform server
+        // CLAUDE.md invariant #8). It is a distinct value per way, so it also
+        // disables the same-attribute line-merge below (a deliberate trade: the
+        // ribbon/recolor work at all zooms, overview tiles are a touch larger).
+        .setAttr("osm_way_id", element.source().id())
         .setAttr(Fields.CLASS, coalesce(minZoomAndNewClass.classOverride, highwayClass))
         .setAttr(Fields.SUBCLASS, highwaySubclass(highwayClass, element.publicTransport(), highway))
         .setAttr(Fields.NETWORK, networkType != null ? networkType.name : null)
