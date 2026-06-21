@@ -75,6 +75,7 @@ import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
 import org.openmaptiles.OpenMapTilesProfile;
 import org.openmaptiles.generated.OpenMapTilesSchema;
 import org.openmaptiles.generated.Tables;
+import org.openmaptiles.overlays.OverlayStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -183,12 +184,16 @@ public class Transportation implements
   private final boolean z13Paths;
   private final Stats stats;
   private final PlanetilerConfig config;
+  // xplatform: per-way derived-data overlays (loneliness promotion, hand-promoted roads, overview
+  // orphan/tiny flags) applied to road features by osm_way_id. Empty unless --overlays is given.
+  private final OverlayStore.LayerOverlays overlays;
   private PreparedGeometry greatBritain = null;
   private PreparedGeometry ireland = null;
 
   public Transportation(Translations translations, PlanetilerConfig config, Stats stats) {
     this.config = config;
     this.stats = stats;
+    this.overlays = OverlayStore.fromConfig(config).forLayer("transportation");
     z13Paths = config.arguments().getBoolean(
       "transportation_z13_paths",
       "transportation(_name) layer: show all paths on z13",
@@ -500,6 +505,10 @@ public class Transportation implements
       }
       var minZoomAndNewClass = getMinzoomAndClass(element, highwayClass);
       int minzoom = minZoomAndNewClass.minzoom;
+      // xplatform overlays: a derive (e.g. loneliness) may promote/override this way's min-zoom by
+      // osm_way_id. No-op when no overlay targets this way. Applied before the maxzoom cull so a
+      // promoted way isn't dropped by the natural (higher) min-zoom.
+      minzoom = overlays.minZoom(element.source().id(), minzoom);
 
       if (minzoom > config.maxzoom()) {
         return;
@@ -550,6 +559,9 @@ public class Transportation implements
           .setAttr(Fields.LEVEL, Parse.parseLongOrNull(element.source().getTag("level")))
           .setAttr(Fields.INDOOR, element.indoor() ? 1 : null);
       }
+      // xplatform overlays: attach any derive-provided attributes for this way (e.g. the overview
+      // orphan/tiny flags a style filter reads at low zoom). No-op without a transportation overlay.
+      overlays.applyAttrs(element.source().id(), feature);
     }
   }
 

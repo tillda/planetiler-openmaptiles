@@ -71,6 +71,7 @@ import org.locationtech.jts.geom.Point;
 import org.openmaptiles.OpenMapTilesProfile;
 import org.openmaptiles.generated.OpenMapTilesSchema;
 import org.openmaptiles.generated.Tables;
+import org.openmaptiles.overlays.OverlayStore;
 import org.openmaptiles.util.OmtLanguageUtils;
 
 /**
@@ -119,6 +120,9 @@ public class Place implements
   ), 0);
   private final Translations translations;
   private final Stats stats;
+  // xplatform: per-place-node derived-data overlays (e.g. the `places` derive's baked label
+  // min-zoom + pop_band/importance), applied by OSM node id. Empty unless --overlays is given.
+  private final OverlayStore.LayerOverlays overlays;
   // spatial indexes for joining natural earth place labels with their corresponding points
   // from openstreetmap
   private PolygonIndex<NaturalEarthRegion> countries = PolygonIndex.create();
@@ -128,6 +132,7 @@ public class Place implements
   public Place(Translations translations, PlanetilerConfig config, Stats stats) {
     this.translations = translations;
     this.stats = stats;
+    this.overlays = OverlayStore.fromConfig(config).forLayer("place");
   }
 
   /** Returns the portion of the world that {@code squareMeters} covers where 1 is the entire planet. */
@@ -349,6 +354,9 @@ public class Place implements
       placeType.ordinal() <= PlaceType.TOWN.ordinal() ? 7 :
       placeType.ordinal() <= PlaceType.VILLAGE.ordinal() ? 8 :
       placeType.ordinal() <= PlaceType.SUBURB.ordinal() ? 11 : 14;
+    // xplatform overlays: the `places` derive may override this node's label min-zoom (its baked
+    // population-banded appear zoom). No-op when no overlay targets the place layer.
+    minzoom = overlays.minZoom(element.source().id(), minzoom);
 
     var feature = features.point(LAYER_NAME).setBufferPixels(BUFFER_SIZE)
       .putAttrs(OmtLanguageUtils.getNames(element.source().tags(), translations))
@@ -371,6 +379,9 @@ public class Place implements
         case "6" -> feature.setAttr(Fields.CAPITAL, 6);
       }
     }
+    // xplatform overlays: attach any derive-provided attributes for this place node (e.g. the
+    // `places` derive's pop_band / importance). No-op when no overlay targets the place layer.
+    overlays.applyAttrs(element.source().id(), feature);
   }
 
   @Override
