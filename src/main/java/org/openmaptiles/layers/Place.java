@@ -123,6 +123,11 @@ public class Place implements
   // xplatform: per-place-node derived-data overlays (e.g. the `places` derive's baked label
   // min-zoom + pop_band/importance), applied by OSM node id. Empty unless --overlays is given.
   private final OverlayStore.LayerOverlays overlays;
+  // xplatform: when true, EMIT Natural-Earth city + country labels directly (capped at z5) so a
+  // tiny-OSM "global base" build (--area=monaco --bounds=planet) carries world labels at the
+  // zoomed-out levels. Off by default: detail builds carry real OSM places and must not get
+  // duplicate NE labels (and the base serves z0–z5, the detail z6+, so they never overlap).
+  private final boolean baseLabels;
   // spatial indexes for joining natural earth place labels with their corresponding points
   // from openstreetmap
   private PolygonIndex<NaturalEarthRegion> countries = PolygonIndex.create();
@@ -133,6 +138,11 @@ public class Place implements
     this.translations = translations;
     this.stats = stats;
     this.overlays = OverlayStore.fromConfig(config).forLayer("place");
+    this.baseLabels = config.arguments().getBoolean(
+      "base_place_labels",
+      "place layer: emit Natural-Earth city/country labels at z0–z5 (for the global low-zoom base build)",
+      false
+    );
   }
 
   /** Returns the portion of the world that {@code squareMeters} covers where 1 is the entire planet. */
@@ -172,11 +182,16 @@ public class Place implements
     // emitting features from openstreetmap data.
     try {
       switch (table) {
-        case "ne_10m_admin_0_countries" -> countries.put(feature.worldGeometry(), new NaturalEarthRegion(
-          feature.getString("name"), 6,
-          feature.getLong("scalerank"),
-          feature.getLong("labelrank")
-        ));
+        case "ne_10m_admin_0_countries" -> {
+          countries.put(feature.worldGeometry(), new NaturalEarthRegion(
+            feature.getString("name"), 6,
+            feature.getLong("scalerank"),
+            feature.getLong("labelrank")
+          ));
+          if (baseLabels) {
+            emitNaturalEarthCountry(feature, features);
+          }
+        }
         case "ne_10m_admin_1_states_provinces" -> {
           Double scalerank = Parse.parseDoubleOrNull(feature.getTag("scalerank"));
           Double labelrank = Parse.parseDoubleOrNull(feature.getTag("labelrank"));
@@ -189,20 +204,70 @@ public class Place implements
             ));
           }
         }
-        case "ne_10m_populated_places" -> cities.put(feature.worldGeometry(), new NaturalEarthPoint(
-          feature.getString("name"),
-          feature.getString("wikidataid"),
-          (int) feature.getLong("scalerank"),
-          Stream.of("name", "namealt", "meganame", "name_en", "nameascii").map(feature::getString)
-            .filter(Objects::nonNull)
-            .map(s -> s.toLowerCase(Locale.ROOT))
-            .collect(Collectors.toSet())
-        ));
+        case "ne_10m_populated_places" -> {
+          cities.put(feature.worldGeometry(), new NaturalEarthPoint(
+            feature.getString("name"),
+            feature.getString("wikidataid"),
+            (int) feature.getLong("scalerank"),
+            Stream.of("name", "namealt", "meganame", "name_en", "nameascii").map(feature::getString)
+              .filter(Objects::nonNull)
+              .map(s -> s.toLowerCase(Locale.ROOT))
+              .collect(Collectors.toSet())
+          ));
+          if (baseLabels) {
+            emitNaturalEarthCity(feature, features);
+          }
+        }
       }
     } catch (GeometryException e) {
       e.log(stats, "omt_place_ne",
         "Error getting geometry for natural earth feature " + table + " " + feature.getTag("ogc_fid"));
     }
+  }
+
+  // xplatform: emit a Natural-Earth populated place as a city/town label, z0–z5 only. Mirrors the
+  // OSM city ranking (scalerank → rank → minzoom) used in the OSM join below, so NE and OSM cities
+  // pick the same appear-zoom. Gated by --base_place_labels (the global low-zoom base build); off
+  // for detail builds, which carry real OSM places at z6+.
+  private void emitNaturalEarthCity(SourceFeature feature, FeatureCollector features) {
+    String name = nullIfEmpty(feature.getString("name"));
+    if (name == null) {
+      return;
+    }
+    int scaleRank = (int) feature.getLong("scalerank");
+    int rank = Math.clamp(scaleRank <= 5 ? scaleRank + 1 : scaleRank, 1, 10);
+    int minzoom = Math.clamp(rank == 1 ? 2 : rank <= 8 ? Math.max(3, rank - 1) : 5, 0, 5);
+    String latin = coalesce(nullIfEmpty(feature.getString("nameascii")), name);
+    String en = coalesce(nullIfEmpty(feature.getString("name_en")), name);
+    features.point(LAYER_NAME).setBufferPixels(BUFFER_SIZE)
+      .setAttr(Fields.NAME, name)
+      .setAttr("name:latin", latin)
+      .setAttr(Fields.NAME_EN, en)
+      .setAttr(Fields.CLASS, rank <= 6 ? "city" : "town")
+      .setAttr(Fields.RANK, rank)
+      .setZoomRange(minzoom, 5)
+      .setSortKey(rank);
+  }
+
+  // xplatform: emit a Natural-Earth country polygon as a country label point, z0–z5 only. Gated by
+  // --base_place_labels (the global low-zoom base build).
+  private void emitNaturalEarthCountry(SourceFeature feature, FeatureCollector features) {
+    String name = nullIfEmpty(feature.getString("name"));
+    if (name == null) {
+      return;
+    }
+    int rank = Math.clamp(
+      (int) Math.ceil((feature.getLong("scalerank") + feature.getLong("labelrank")) / 2.0), 1, 6);
+    int minzoom = Math.clamp(rank - 1, 0, 5);
+    String en = coalesce(nullIfEmpty(feature.getString("name_en")), name);
+    features.pointOnSurface(LAYER_NAME).setBufferPixels(BUFFER_SIZE)
+      .setAttr(Fields.NAME, name)
+      .setAttr("name:latin", en)
+      .setAttr(Fields.NAME_EN, en)
+      .setAttr(Fields.CLASS, FieldValues.CLASS_COUNTRY)
+      .setAttr(Fields.RANK, rank)
+      .setZoomRange(minzoom, 5)
+      .setSortKey(rank);
   }
 
   @Override
