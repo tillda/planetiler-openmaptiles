@@ -75,7 +75,7 @@ import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
 import org.openmaptiles.OpenMapTilesProfile;
 import org.openmaptiles.generated.OpenMapTilesSchema;
 import org.openmaptiles.generated.Tables;
-import org.openmaptiles.overlays.OverlayStore;
+import org.openmaptiles.derives.DeriveStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -184,16 +184,16 @@ public class Transportation implements
   private final boolean z13Paths;
   private final Stats stats;
   private final PlanetilerConfig config;
-  // xplatform: per-way derived-data overlays (loneliness promotion, hand-promoted roads, overview
-  // orphan/tiny flags) applied to road features by osm_way_id. Empty unless --overlays is given.
-  private final OverlayStore.LayerOverlays overlays;
+  // xplatform: per-way derives (loneliness promotion, hand-promoted roads, overview
+  // orphan/tiny flags) applied to road features by osm_way_id. Empty unless --derives is given.
+  private final DeriveStore.LayerDerives derives;
   private PreparedGeometry greatBritain = null;
   private PreparedGeometry ireland = null;
 
   public Transportation(Translations translations, PlanetilerConfig config, Stats stats) {
     this.config = config;
     this.stats = stats;
-    this.overlays = OverlayStore.fromConfig(config).forLayer("transportation");
+    this.derives = DeriveStore.fromConfig(config).forLayer("transportation");
     z13Paths = config.arguments().getBoolean(
       "transportation_z13_paths",
       "transportation(_name) layer: show all paths on z13",
@@ -205,10 +205,14 @@ public class Transportation implements
       entry(FieldValues.CLASS_SERVICE, 13),
       entry(FieldValues.CLASS_MINOR, 13),
       entry(FieldValues.CLASS_RACEWAY, 12),
-      entry(FieldValues.CLASS_TERTIARY, 11),
+      // xplatform: tertiary onset pulled z11→z9 and secondary z9→z8 for a denser driving
+      // overview; per-way curvy/lonely tertiary are then pulled further to z8 by the
+      // road-promotion / loneliness derives (min(9,8)=8). So: secondary@z8, unpromoted
+      // tertiary@z9, promoted tertiary@z8.
+      entry(FieldValues.CLASS_TERTIARY, 9),
       entry(FieldValues.CLASS_BUSWAY, 11),
       entry(FieldValues.CLASS_BUS_GUIDEWAY, 11),
-      entry(FieldValues.CLASS_SECONDARY, 9),
+      entry(FieldValues.CLASS_SECONDARY, 8),
       entry(FieldValues.CLASS_PRIMARY, 7),
       entry(FieldValues.CLASS_TRUNK, 6),
       entry(FieldValues.CLASS_MOTORWAY, 4)
@@ -504,11 +508,11 @@ public class Transportation implements
         return;
       }
       var minZoomAndNewClass = getMinzoomAndClass(element, highwayClass);
-      int minzoom = minZoomAndNewClass.minzoom;
-      // xplatform overlays: a derive (e.g. loneliness) may promote/override this way's min-zoom by
-      // osm_way_id. No-op when no overlay targets this way. Applied before the maxzoom cull so a
+      int naturalMinzoom = minZoomAndNewClass.minzoom;
+      // xplatform derives: a derive (e.g. loneliness) may promote/override this way's min-zoom by
+      // osm_way_id. No-op when no derive targets this way. Applied before the maxzoom cull so a
       // promoted way isn't dropped by the natural (higher) min-zoom.
-      minzoom = overlays.minZoom(element.source().id(), minzoom);
+      int minzoom = derives.minZoom(element.source().id(), naturalMinzoom);
 
       if (minzoom > config.maxzoom()) {
         return;
@@ -559,9 +563,13 @@ public class Transportation implements
           .setAttr(Fields.LEVEL, Parse.parseLongOrNull(element.source().getTag("level")))
           .setAttr(Fields.INDOOR, element.indoor() ? 1 : null);
       }
-      // xplatform overlays: attach any derive-provided attributes for this way (e.g. the overview
-      // orphan/tiny flags a style filter reads at low zoom). No-op without a transportation overlay.
-      overlays.applyAttrs(element.source().id(), feature);
+      // xplatform derives: attach any derive-provided attributes for this way (e.g. the overview
+      // orphan/tiny flags a style filter reads at low zoom). No-op without a transportation derive.
+      derives.applyAttrs(element.source().id(), feature);
+      // xplatform derives: stamp the "added" flag (e.g. promoted=1) only when a min-zoom derive
+      // actually pulled this way earlier than its natural zoom — so a style can show what the
+      // promotion ADDED to the overview, not merely the set it targeted. No-op otherwise.
+      derives.applyMinZoomAdded(element.source().id(), naturalMinzoom, feature);
     }
   }
 
