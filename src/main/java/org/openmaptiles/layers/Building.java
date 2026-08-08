@@ -109,7 +109,9 @@ public class Building implements
     this.mergeZ13Buildings = config.arguments().getBoolean(
       "building_merge_z13",
       "building layer: merge nearby buildings at z13",
-      true
+      // xplatform: default OFF — the merged z13 blocks read poorly in our styles and
+      // the merge alone costs ~2min of an ~8min dev build (upstream: "VERY EXPENSIVE").
+      false
     );
   }
 
